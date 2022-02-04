@@ -3,13 +3,15 @@
   #include "AttributesNode.h"
   #include <stdio.h>
   #include "CommentList.h"
-                  #include <stdbool.h>
+  #include <stdbool.h>
   #include "parser.tab.h"
   #include "TokenList.h"
   #include "CommentList.h"
-        #include "GlobalTable.h"
+  #include "GlobalTable.h"
   #include "PositionNode.h"
-                  #include       "string.h"
+  #include "string.h"
+
+
   extern FILE* scanner_out_file;
   extern bool enablePrintingTokens;
   #define DEBUG_SCANNER enablePrintingTokens
@@ -39,6 +41,7 @@
   #define YY_USER_ACTION updatePositions();
 
   #define PASS_TO_STATE(x) yyless(0);restorePositions();BEGIN(x)
+  #define SKIP_RULE restorePositions();REJECT
 
   bool started = false;
   void openLexDebug();
@@ -46,7 +49,7 @@
   void restorePositions();
   int printDebug();
   void lexError(const char*);
-  bool checkReqExp(); //auxillary function for embedded line
+  AttributesNode storeTokenInfo(const char* customText);
 
   TokenList tokenList;
   char* currString;
@@ -54,18 +57,18 @@
   bool seenToken = false;
 %}
 
-%x multiline
-%x inblock
-%x inembed
-%x start_line
-%x start_multiline
-%x dummy_state
-%x str
-%x verifyWhiteSpace
-%x verifyOther
-%x start_embed_line
-%x process_embed_end
-%x banana
+%x processMultilineComment
+%x inBlock
+%x inEmbed
+%x processSegmentStart
+%x processSegmentStartMultilineComment
+%x finishState
+%x processString
+%x processNewlineTerminatedWhitespace
+%x processWhitespace
+%x processEmbedStart
+%x processEmbedEnd
+%x processSegmentEdgeCase
 %option yylineno
 %option noyywrap
 %option nodefault
@@ -80,7 +83,7 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
 
 <INITIAL>{
   ^"<'"						{
-                              BEGIN(start_line);
+                              BEGIN(processSegmentStart);
                               if(!started){
                                 started=true;
                                 RETURN(START);
@@ -96,108 +99,104 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
   .							{}
 
 
-  <<EOF>>{
-    BEGIN(dummy_state);
+  <<EOF>>										{
+                              BEGIN(finishState);
                               if(started){
                                 RETURN(END);
                               } else {
                                 RETURN(EMPTY_INPUT);
                               }
-  }
+                            }
 }
 
-<inblock>{
+<inBlock>{
   \"												{
-                              seenToken=true;
+                              //seenToken=true;
                               tokenList = createTokenList();
-                              BEGIN(str);
+                              BEGIN(processString);
                             }
 
   ";"+											{
                               seenToken=false; RETURN(SC);
                             }
 
-  "#:"				            	{
-                              seenToken=true;
-                              BEGIN(start_embed_line);
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              addTokenToList(tokenList1,"{",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
-                              setTokenListAN(yylval, tokenList1);
-                              RETURN(EMBED_START);
-                            }
+  "#:"/[ \t]*\n		                                {
+                                                    yylval = storeTokenInfo("{");
+                                                    BEGIN(processEmbedStart);
+                                                    yylineno--;
+                                                    RETURN(EMBED_START);
+                                                  }
+  "#:"/[ \t]*{SSComment}[ \t]*\n                  {
+                                                    yylval = storeTokenInfo("{");
+                                                    BEGIN(processEmbedStart);
+                                                    yylineno--;
+                                                    RETURN(EMBED_START);
+                                                  }
+  "#:"/[ \t]*{SDComment}[ \t]*\n                  {
+                                                    if(!allowDashComments){
+                                                      seenToken=true;
+                                                      yylval = storeTokenInfo(NULL);
+                                                      RETURN(TOKEN);
+                                                    }
+                                                    yylval = storeTokenInfo("{");
+                                                    BEGIN(processEmbedStart);
+                                                    yylineno--;
+                                                    RETURN(EMBED_START);
+                                                  }
+  "#:"                                            {
+                                                    //The #: has other items following it in the same line, thus processed as a token
+                                                    seenToken=true;
+                                                    yylval = storeTokenInfo(NULL);
+                                                    RETURN(TOKEN);
+                                                  }
 
   "/*"											{
-                              BEGIN(multiline);
+                              BEGIN(processMultilineComment);
                             }
 
   "*/"											{
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              yylval = storeTokenInfo(NULL);
                               RETURN(TOKEN);
                             }
 
   "/"|"#"										{
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              yylval = storeTokenInfo(NULL);
                               RETURN(TOKEN);
                             }
 
-  "("[\n\r\t ]*						  {
-                              seenToken=true;
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,"(",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+  "("         						  {
+                              seenToken=false;
+                              yylval = storeTokenInfo(NULL);
                               RETURN(LPAREN);
                             }
 
-  ")"							{
+  ")"							          {
                               seenToken=true;
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,")",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              yylval = storeTokenInfo(NULL);
                               RETURN(RPAREN);
                             }
 
-  "{"[\n\r\t ]*							{
-                              seenToken=true;
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,"{",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+  "{"         							{
+                              seenToken=false;
+                              yylval = storeTokenInfo(NULL);
                               RETURN(LBRACE);
                             }
 
-  "}"							{
+  "}"							          {
                               seenToken=true;
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,"}",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              yylval = storeTokenInfo(NULL);
                               RETURN(RBRACE);
                             }
 
-  "["[\n\r\t ]*							{
-                              seenToken=true;
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,"[",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+  "["							          {
+                              seenToken=false;
+                              yylval = storeTokenInfo(NULL);
                               RETURN(LBRACKET);
                             }
 
-  "]"						  {
+  "]"						            {
                               seenToken=true;
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,"]",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              yylval = storeTokenInfo(NULL);
                               RETURN(RBRACKET);
                             }
 
@@ -214,35 +213,35 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 
   {SDComment}  		          {
-                              if(!allowDashComments) REJECT;
-                              addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                              if(!allowDashComments){
+                                SKIP_RULE;
+                              } else {
+                                addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                              }
                             }
 
-  {word}					{
+  {word}					          {
                               seenToken=true;
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              yylval = storeTokenInfo(NULL);
                               RETURN(TOKEN);
                             }
 
   [\n\r\t ]*\n						  {
-                              BEGIN(verifyWhiteSpace);
+                              BEGIN(processNewlineTerminatedWhitespace);
                             }
 
   {whiteSpaces}							{
-                              BEGIN(verifyOther);
+                              BEGIN(processWhitespace);
                             }
 
-  .												  {
-                              lexError("Uncaught text in block");
+  <<EOF>>										{
+                              lexError("unclosed block");
                             }
 }
 
-<inembed>{
+<inEmbed>{
   ([\t ])*end([\t ])*#.*    {
-                              PASS_TO_STATE(process_embed_end);
+                              PASS_TO_STATE(processEmbedEnd);
                             }
 
   .*												{
@@ -253,22 +252,20 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
 
 }
 
-<process_embed_end>{
+<processEmbedEnd>{
   [\t ]+                    {}
 
   "end"[\t ]*"#"            {
-                              BEGIN(inblock);
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,"}",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
-							  RETURN(EMBED_END);
+                              BEGIN(inBlock);
+                              yylval = storeTokenInfo("}");
+							                seenToken=true;
+                              RETURN(EMBED_END);
                             }
 }
 
-<start_line>{
+<processSegmentStart>{
   "/*"										  {
-                              BEGIN(start_multiline);
+                              BEGIN(processSegmentStartMultilineComment);
                             }
 
   {SSComment}  		          {
@@ -276,12 +273,15 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 
   {SDComment}  		          {
-                              if(!allowDashComments) return TOKEN;
-                              addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                              if(!allowDashComments){
+                                SKIP_RULE;
+                              } else {
+                                addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                              }
                             }
 
   [\n\r]									  {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
                             }
 
   [ \t]+ 									  {
@@ -292,30 +292,25 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 }
 
-<start_embed_line>{
+<processEmbedStart>{
   {SSComment}  		          {
                               addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
                             }
 
   {SDComment}  		          {
-                              if(!allowDashComments) REJECT;
                               addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
                             }
 
   [\n\r]									  {
-                              BEGIN(inembed);
+                              BEGIN(inEmbed);
                             }
 
   [ \t]+ 									  {
                             }
 
-  [^ \n\r\t] 							  {
-                              lexError("token after #:");
-                            }
-
 }
 
-<multiline>{
+<processMultilineComment>{
   [\n\r]                    {
                             }
 
@@ -326,14 +321,14 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 
   "*"+"/"        						{
-                              BEGIN(verifyOther);
+                              BEGIN(processWhitespace);
                             }
 
 }
 
-<start_multiline>{
+<processSegmentStartMultilineComment>{
   [\n\r]									  {
-                              BEGIN(multiline);
+                              BEGIN(processMultilineComment);
                             }
 
   [^*\n\r]*        					{
@@ -345,11 +340,11 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 
   "*"+"/"        						{
-                              BEGIN(start_line);
+                              BEGIN(processSegmentStart);
                             }
 }
 
-<verifyWhiteSpace>{
+<processNewlineTerminatedWhitespace>{
   "<'"									    {
                               lexError("Start bracket in code block");
                             }
@@ -359,29 +354,33 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 
   (\/\/)								    {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
                             }
 
   (\-\-)								    {
-                              PASS_TO_STATE(inblock);
+                              if(!allowDashComments){
+                                SKIP_RULE;
+                              }
+                              PASS_TO_STATE(inBlock);
                             }
 
   "/*"									    {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
+                            }
+
+  ")"|"}"|"]"               {
+                              PASS_TO_STATE(inBlock);
                             }
 
   [^\n\r\t ;]							  {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
                               if(seenToken){
-                                yylval = createAttributesNode();
-                                TokenList tokenList1 = createTokenList();
-                                setTokenListAN(yylval, tokenList1);
-                                addTokenToList(tokenList1," ",-10,-10,positionNode.startLine,positionNode.startColumn);
+                                yylval = storeTokenInfo(" ");
                                 RETURN(WHITESPACE);}
                             }
 
   ";"									      {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
                             }
 
   .                         {
@@ -390,7 +389,7 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
 
 }
 
-<verifyOther>{
+<processWhitespace>{
   ^"<'"										  {
                               lexError("Start bracket in code block");
                             }
@@ -400,35 +399,36 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 
   (\/\/)								    {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
                             }
 
   (\-\-)								    {
-                              PASS_TO_STATE(inblock);
+                              if(!allowDashComments){
+                                SKIP_RULE;
+                              }
+                              PASS_TO_STATE(inBlock);
                             }
 
   "/*"									    {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
+                            }
+
+  ")"|"}"|"]"               {
+                              PASS_TO_STATE(inBlock);
                             }
 
   [^\n\r\t ;]							  {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
                               if(seenToken){
-                                yylval = createAttributesNode();
-                                TokenList tokenList1 = createTokenList();
-                                setTokenListAN(yylval, tokenList1);
-                                addTokenToList(tokenList1," ",-10,-10,positionNode.startLine,positionNode.startColumn);
-                                return WHITESPACE;
+                                yylval = storeTokenInfo(" ");
+                                RETURN(WHITESPACE);
                                 }
                             }
 
   "<'"										  {
-                              PASS_TO_STATE(banana);
+                              PASS_TO_STATE(processSegmentEdgeCase);
                               if(seenToken){
-                                yylval = createAttributesNode();
-                                TokenList tokenList1 = createTokenList();
-                                setTokenListAN(yylval, tokenList1);
-                                addTokenToList(tokenList1," ",-10,-10,positionNode.startLine,positionNode.startColumn);
+                                yylval = storeTokenInfo(" ");
                                 RETURN(WHITESPACE);
                               } else {
                                 seenToken=true;
@@ -436,12 +436,9 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 
   "'>"										  {
-                              PASS_TO_STATE(banana);
+                              PASS_TO_STATE(processSegmentEdgeCase);
                               if(seenToken){
-                                yylval = createAttributesNode();
-                                TokenList tokenList1 = createTokenList();
-                                setTokenListAN(yylval, tokenList1);
-                                addTokenToList(tokenList1," ",-10,-10,positionNode.startLine,positionNode.startColumn);
+                                yylval = storeTokenInfo(" ");
                                 RETURN(WHITESPACE);
                               } else {
                                 seenToken=true;
@@ -449,28 +446,25 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                             }
 
   ";"									      {
-                              PASS_TO_STATE(inblock);
+                              PASS_TO_STATE(inBlock);
                             }
 
   .										      {
                               printf("What the fuck");
-                            }
+                          }
 
   [\n\r\t ]							    {}
 }
 
 
-<banana>"<'"|"'>"					  {
-                              BEGIN(inblock);
-                              yylval = createAttributesNode();
-                              TokenList tokenList1 = createTokenList();
-                              setTokenListAN(yylval, tokenList1);
-                              addTokenToList(tokenList1,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+<processSegmentEdgeCase>"<'"|"'>"					  {
+                              BEGIN(inBlock);
+                              yylval = storeTokenInfo(NULL);
                               RETURN(TOKEN);
                             }
 
-<str>\"	                    { /* saw closing quote - all done */
-                        		BEGIN(inblock);
+<processString>\"	                    { /* saw closing quote - all done */
+                        		BEGIN(inBlock);
                         		currString = aggregateTokenList(tokenList);
                               yylval = createAttributesNode();
                               TokenList tokenList1 = createTokenList();
@@ -480,42 +474,50 @@ word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
                                       ,getLastLineTokenList(tokenList),getlastColumnTokenList(tokenList),NULL);
                               int res = addSimpleFormToGlobalTable(globalTable, simpleForm);
 							  addSimpleFormTokenToList(tokenList1, res);
+                int temp = res;
+                int count = 0;
+                while(temp){
+                  temp/=16;
+                  count++;
+                }
+                addFragmentToTokenList(tokenList1, positionNode.endLine,positionNode.endColumn-1, 3+count);
 							  addTokenToList(tokenList1,yytext,0,0,positionNode.endLine,positionNode.endColumn);
                               destroyTokenList(tokenList);
+                              seenToken=true;
                               RETURN(STRING);
                             }
 
-<str>\n	                    {
+<processString>\n	                    {
                     			   lexError("Unterminated String Constant\n");
                     			  }
 
-<str>\\n                    {
+<processString>\\n                    {
                               char s[2];s[0]='\n';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
                             }
 
-<str>\\f                    {
+<processString>\\f                    {
                               char s[2];s[0]='\f';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
                             }
 
-<str>\\t                    {
+<processString>\\t                    {
                               char s[2];s[0]='\t';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
                             }
 
-<str>\\r                    {
+<processString>\\r                    {
                               char s[2];s[0]='\r';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
                             }
 
-<str>\\\"                   {
+<processString>\\\"                   {
                               char s[2];s[0]='\"';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
                             }
 
-<str>\\\\                   {
+<processString>\\\\                   {
                               char s[2];s[0]='\\';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
                             }
 
-<str>\\[ \t]*\n             {}
+<processString>\\[ \t]*\n             {}
 
-<str>[^\\\n\"]+	            {
+<processString>[^\\\n\"]+	            {
 	                           addTokenToList(tokenList,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
 	                          }
 %%
@@ -542,6 +544,15 @@ void restorePositions(){
     positionNode.startColumn = positionNode.prevStartColumn;
     positionNode.endLine = positionNode.prevEndLine;
     positionNode.endColumn = positionNode.prevEndColumn;
+}
+
+AttributesNode storeTokenInfo(const char* customText){
+  AttributesNode res = createAttributesNode();
+  TokenList tokenList = createTokenList();
+  setTokenListAN(res, tokenList);
+  const char* tokenText = customText ? customText : yytext;
+  addTokenToList(tokenList, tokenText, positionNode.startLine, positionNode.startColumn, positionNode.endLine, positionNode.endColumn);
+  return res;
 }
 
 void lexError(const char* errMsg){
