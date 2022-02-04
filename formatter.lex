@@ -15,30 +15,35 @@
 %x rules_section
 %x code_section
 %option noyywrap
+%option nodefault
 whiteSpace 	([\t ])
 whiteSpaces ([\t \n\r])
-token       ([^\t {}%])+
+token       ([^\t {}%>\n\r])+
 
 
 %%
 
 
 <INITIAL>{
-    "%{"(\n|\r)*       { BEGIN(c_section); printf("%s",yytext);}
+    "%{"       { BEGIN(c_section); printf("%s\n",yytext);}
     .*                  { printf("%s\n",yytext); }
-    [\n\r]              {}
+    [\n\r]+             {}
 }
 
 <c_section>{
-    (\n|\r)+            { printf("\n");}
+    (\n|\r)+                {printf("\n");}
+                    {}
     "%}"                { printf("%s\n",yytext);
     BEGIN(opt_section);
     }
     "%"                 { printf("%s",yytext);}
+    ">"                 { printf("%s",yytext);}
     "{"                 { printf("%s",yytext);}
     "}"                 { printf("%s",yytext);}
+    
     ^{whiteSpace}*      { printf("\t"); }
     {token}             { printf("%s",yytext);}
+    
     {whiteSpace}+       { printf(" ");}
     
 }
@@ -54,15 +59,17 @@ token       ([^\t {}%])+
     "%%"\n              { printf("%s\n",yytext);BEGIN(code_section);}
     "%"                 { printf("%s",yytext);}
     "{"\"               { printf("%s",yytext);}
-    ">{"                { printf("%s",yytext);}
+    ">{"\"              { printf("%s",yytext);}
+    ">"                 { printf("%s",yytext);}
+    ">{"                { printf("%s",yytext);blocksCnt++;printNewLine();}
     "}"\"               { printf("%s",yytext);}
-    ^{whiteSpace}*/"}" { blocksCnt--;printInit();blocksCnt++;}
+    ^{whiteSpace}*/"}"  { blocksCnt--;printInit();blocksCnt++;}
     "{"{whiteSpaces}+   { printNewLine();printf("{");blocksCnt++;printNewLine();}
-    "{"                   {printf("{");blocksCnt++;}
-    {whiteSpaces}+"}"   { blocksCnt--;printNewLine();printf("}");printf("\n");}
-    "}"$                { blocksCnt--;printNewLine();printf("}");printf("\n");}
+    "{"                 { printf("{");blocksCnt++;}
+    {whiteSpaces}+"}"{whiteSpaces}*
+                        { blocksCnt--; printNewLine(); printf("}"); printNewLine();}
+    "}"$                { blocksCnt--; printNewLine(); printf("}"); printNewLine();}
     "}"                 { blocksCnt--;printf("}");}
-    
     ^{whiteSpace}*      { printInit();}
     {token}             { printf("%s",yytext);}
     {whiteSpace}+       { printf(" ");}

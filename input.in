@@ -1,0 +1,555 @@
+/*Definitions*/
+%{
+  #include "AttributesNode.h"
+  #include <stdio.h>
+  #include "CommentList.h"
+                  #include <stdbool.h>
+  #include "parser.tab.h"
+  #include "TokenList.h"
+  #include "CommentList.h"
+        #include "GlobalTable.h"
+  #include "PositionNode.h"
+                  #include       "string.h"
+  extern FILE* scanner_out_file;
+  extern bool enablePrintingTokens;
+  #define DEBUG_SCANNER enablePrintingTokens
+
+  #ifdef DEBUG_SCANNER
+  #define RETURN(x) return printDebug(x, #x)
+  #else
+  #define RETURN(x) return x
+  #endif
+
+
+  #define YY_USER_INIT \
+  commentList = createCommentList(); \
+  positionNode.startLine=1; \
+  positionNode.startColumn=0; \
+  positionNode.endLine=1; \
+  positionNode.endColumn=0;             \
+  globalTable = createGlobalTable();    \
+  openLexDebug();
+
+
+  extern bool allowDashComments;
+  CommentList commentList;
+  GlobalTable globalTable;
+  PositionNode positionNode;
+
+  #define YY_USER_ACTION updatePositions();
+
+  #define PASS_TO_STATE(x) yyless(0);restorePositions();BEGIN(x)
+
+  bool started = false;
+  void openLexDebug();
+  void updatePositions();
+  void restorePositions();
+  int printDebug();
+  void lexError(const char*);
+  bool checkReqExp(); //auxillary function for embedded line
+
+  TokenList tokenList;
+  char* currString;
+
+  bool seenToken = false;
+%}
+
+%x multiline
+%x inblock
+%x inembed
+%x start_line
+%x start_multiline
+%x dummy_state
+%x str
+%x verifyWhiteSpace
+%x verifyOther
+%x start_embed_line
+%x process_embed_end
+%x banana
+%option yylineno
+%option noyywrap
+%option nodefault
+
+
+whiteSpaces 							     	([\n\t\r ])+
+SSComment    							     	(\/\/)(.)*
+SDComment										(\-\-)(.)*
+word											([^"\n\t\r #\/\(\)\[\]\{\}\;])+
+/*Rules*/
+%%
+
+<INITIAL>{
+  ^"<'"						{
+                              BEGIN(start_line);
+                              if(!started){
+                                started=true;
+                                RETURN(START);
+                              }
+                            }
+
+  ^"'>"        				{
+                              lexError("no matching start bracket");
+                            }
+
+  {whiteSpaces}				{}
+
+  .							{}
+
+
+  <<EOF>>{
+    BEGIN(dummy_state);
+                              if(started){
+                                RETURN(END);
+                              } else {
+                                RETURN(EMPTY_INPUT);
+                              }
+  }
+}
+
+<inblock>{
+  \"												{
+                              seenToken=true;
+                              tokenList = createTokenList();
+                              BEGIN(str);
+                            }
+
+  ";"+											{
+                              seenToken=false; RETURN(SC);
+                            }
+
+  "#:"				            	{
+                              seenToken=true;
+                              BEGIN(start_embed_line);
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              addTokenToList(tokenList1,"{",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              setTokenListAN(yylval, tokenList1);
+                              RETURN(EMBED_START);
+                            }
+
+  "/*"											{
+                              BEGIN(multiline);
+                            }
+
+  "*/"											{
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(TOKEN);
+                            }
+
+  "/"|"#"										{
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(TOKEN);
+                            }
+
+  "("[\n\r\t ]*						  {
+                              seenToken=true;
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,"(",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(LPAREN);
+                            }
+
+  ")"							{
+                              seenToken=true;
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,")",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(RPAREN);
+                            }
+
+  "{"[\n\r\t ]*							{
+                              seenToken=true;
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,"{",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(LBRACE);
+                            }
+
+  "}"							{
+                              seenToken=true;
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,"}",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(RBRACE);
+                            }
+
+  "["[\n\r\t ]*							{
+                              seenToken=true;
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,"[",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(LBRACKET);
+                            }
+
+  "]"						  {
+                              seenToken=true;
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,"]",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(RBRACKET);
+                            }
+
+  ^"<'"											{
+                              lexError("start bracket in code block");
+                            }
+
+  ^"'>"											{
+                              BEGIN(INITIAL);
+                            }
+
+  {SSComment}  		          {
+                              addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                            }
+
+  {SDComment}  		          {
+                              if(!allowDashComments) REJECT;
+                              addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                            }
+
+  {word}					{
+                              seenToken=true;
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(TOKEN);
+                            }
+
+  [\n\r\t ]*\n						  {
+                              BEGIN(verifyWhiteSpace);
+                            }
+
+  {whiteSpaces}							{
+                              BEGIN(verifyOther);
+                            }
+
+  .												  {
+                              lexError("Uncaught text in block");
+                            }
+}
+
+<inembed>{
+  ([\t ])*end([\t ])*#.*    {
+                              PASS_TO_STATE(process_embed_end);
+                            }
+
+  .*												{
+                              RETURN(EMB_LINE);
+                            }
+
+  [\n\r]									  {}
+
+}
+
+<process_embed_end>{
+  [\t ]+                    {}
+
+  "end"[\t ]*"#"            {
+                              BEGIN(inblock);
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,"}",positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+							  RETURN(EMBED_END);
+                            }
+}
+
+<start_line>{
+  "/*"										  {
+                              BEGIN(start_multiline);
+                            }
+
+  {SSComment}  		          {
+                              addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                            }
+
+  {SDComment}  		          {
+                              if(!allowDashComments) return TOKEN;
+                              addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                            }
+
+  [\n\r]									  {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  [ \t]+ 									  {
+                            }
+
+  [^ \n\r\t] 						    {
+                              lexError("token after <'");
+                            }
+}
+
+<start_embed_line>{
+  {SSComment}  		          {
+                              addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                            }
+
+  {SDComment}  		          {
+                              if(!allowDashComments) REJECT;
+                              addToCommentList(commentList ,yytext, positionNode.startLine, positionNode.startColumn);
+                            }
+
+  [\n\r]									  {
+                              BEGIN(inembed);
+                            }
+
+  [ \t]+ 									  {
+                            }
+
+  [^ \n\r\t] 							  {
+                              lexError("token after #:");
+                            }
+
+}
+
+<multiline>{
+  [\n\r]                    {
+                            }
+
+  [^*\n\r]*        			    {/* eat anything that's not a '*' */
+                            }
+
+  "*"+[^*/\n]*   				    {/* eat up '*'s not followed by '/'s */
+                            }
+
+  "*"+"/"        						{
+                              BEGIN(verifyOther);
+                            }
+
+}
+
+<start_multiline>{
+  [\n\r]									  {
+                              BEGIN(multiline);
+                            }
+
+  [^*\n\r]*        					{
+                              /* eat anything that's not a '*' */
+                            }
+
+  "*"+[^*/\n]*   						{
+                              /* eat up '*'s not followed by '/'s */
+                            }
+
+  "*"+"/"        						{
+                              BEGIN(start_line);
+                            }
+}
+
+<verifyWhiteSpace>{
+  "<'"									    {
+                              lexError("Start bracket in code block");
+                            }
+
+  "'>"									    {
+                              BEGIN(INITIAL);
+                            }
+
+  (\/\/)								    {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  (\-\-)								    {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  "/*"									    {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  [^\n\r\t ;]							  {
+                              PASS_TO_STATE(inblock);
+                              if(seenToken){
+                                yylval = createAttributesNode();
+                                TokenList tokenList1 = createTokenList();
+                                setTokenListAN(yylval, tokenList1);
+                                addTokenToList(tokenList1," ",-10,-10,positionNode.startLine,positionNode.startColumn);
+                                RETURN(WHITESPACE);}
+                            }
+
+  ";"									      {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  .                         {
+                              printf("What the fuck");
+                            }
+
+}
+
+<verifyOther>{
+  ^"<'"										  {
+                              lexError("Start bracket in code block");
+                            }
+
+  ^"'>"										  {
+                              BEGIN(INITIAL);
+                            }
+
+  (\/\/)								    {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  (\-\-)								    {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  "/*"									    {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  [^\n\r\t ;]							  {
+                              PASS_TO_STATE(inblock);
+                              if(seenToken){
+                                yylval = createAttributesNode();
+                                TokenList tokenList1 = createTokenList();
+                                setTokenListAN(yylval, tokenList1);
+                                addTokenToList(tokenList1," ",-10,-10,positionNode.startLine,positionNode.startColumn);
+                                return WHITESPACE;
+                                }
+                            }
+
+  "<'"										  {
+                              PASS_TO_STATE(banana);
+                              if(seenToken){
+                                yylval = createAttributesNode();
+                                TokenList tokenList1 = createTokenList();
+                                setTokenListAN(yylval, tokenList1);
+                                addTokenToList(tokenList1," ",-10,-10,positionNode.startLine,positionNode.startColumn);
+                                RETURN(WHITESPACE);
+                              } else {
+                                seenToken=true;
+                              }
+                            }
+
+  "'>"										  {
+                              PASS_TO_STATE(banana);
+                              if(seenToken){
+                                yylval = createAttributesNode();
+                                TokenList tokenList1 = createTokenList();
+                                setTokenListAN(yylval, tokenList1);
+                                addTokenToList(tokenList1," ",-10,-10,positionNode.startLine,positionNode.startColumn);
+                                RETURN(WHITESPACE);
+                              } else {
+                                seenToken=true;
+                                }
+                            }
+
+  ";"									      {
+                              PASS_TO_STATE(inblock);
+                            }
+
+  .										      {
+                              printf("What the fuck");
+                            }
+
+  [\n\r\t ]							    {}
+}
+
+
+<banana>"<'"|"'>"					  {
+                              BEGIN(inblock);
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+                              addTokenToList(tokenList1,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                              RETURN(TOKEN);
+                            }
+
+<str>\"	                    { /* saw closing quote - all done */
+                        		BEGIN(inblock);
+                        		currString = aggregateTokenList(tokenList);
+                              yylval = createAttributesNode();
+                              TokenList tokenList1 = createTokenList();
+                              setTokenListAN(yylval, tokenList1);
+							  addTokenToList(tokenList1,"\"",getStartLineTokenList(tokenList),getStartColumnTokenList(tokenList),0,0);
+							  SimpleForm simpleForm = createSimpleForm(currString,getStartLineTokenList(tokenList),getStartColumnTokenList(tokenList)
+                                      ,getLastLineTokenList(tokenList),getlastColumnTokenList(tokenList),NULL);
+                              int res = addSimpleFormToGlobalTable(globalTable, simpleForm);
+							  addSimpleFormTokenToList(tokenList1, res);
+							  addTokenToList(tokenList1,yytext,0,0,positionNode.endLine,positionNode.endColumn);
+                              destroyTokenList(tokenList);
+                              RETURN(STRING);
+                            }
+
+<str>\n	                    {
+                    			   lexError("Unterminated String Constant\n");
+                    			  }
+
+<str>\\n                    {
+                              char s[2];s[0]='\n';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                            }
+
+<str>\\f                    {
+                              char s[2];s[0]='\f';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                            }
+
+<str>\\t                    {
+                              char s[2];s[0]='\t';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                            }
+
+<str>\\r                    {
+                              char s[2];s[0]='\r';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                            }
+
+<str>\\\"                   {
+                              char s[2];s[0]='\"';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                            }
+
+<str>\\\\                   {
+                              char s[2];s[0]='\\';s[1]=0;addTokenToList(tokenList,s,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+                            }
+
+<str>\\[ \t]*\n             {}
+
+<str>[^\\\n\"]+	            {
+	                           addTokenToList(tokenList,yytext,positionNode.startLine,positionNode.startColumn,positionNode.endLine,positionNode.endColumn);
+	                          }
+%%
+
+void updatePositions(){
+    positionNode.prevStartLine = positionNode.startLine;
+    positionNode.prevStartColumn = positionNode.startColumn;
+    positionNode.prevEndLine = positionNode.endLine;
+    positionNode.prevEndColumn = positionNode.endColumn;
+    positionNode.startLine = positionNode.endLine;
+    positionNode.startColumn = positionNode.endColumn;
+    if (positionNode.startLine == yylineno)
+    {
+        positionNode.endColumn += yyleng;
+    }
+    else{
+        positionNode.endColumn = yytext + yyleng - (strrchr(yytext, '\n') ? strrchr(yytext, '\n') : yytext) - 1;
+        positionNode.endLine = yylineno;
+    }
+}
+
+void restorePositions(){
+    positionNode.startLine = positionNode.prevStartLine;
+    positionNode.startColumn = positionNode.prevStartColumn;
+    positionNode.endLine = positionNode.prevEndLine;
+    positionNode.endColumn = positionNode.prevEndColumn;
+}
+
+void lexError(const char* errMsg){
+	fprintf( stderr, "Lex Error! %s at line %d\n",errMsg,yylineno);
+	exit(400);
+}
+
+int printDebug(int token, char *s) {
+  fprintf(scanner_out_file, "token : %s, text: %s ,line: %d\n", s,yytext, yylineno);
+  return token;
+}
