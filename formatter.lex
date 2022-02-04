@@ -66,9 +66,8 @@ token       ([^\t {}%>\n\r])+
     ^{whiteSpace}*/"}"  { blocksCnt--;printInit();blocksCnt++;}
     "{"{whiteSpaces}+   { printNewLine();printf("{");blocksCnt++;printNewLine();}
     "{"                 { printf("{");blocksCnt++;}
-    {whiteSpaces}+"}"{whiteSpaces}*
-                        { blocksCnt--; printNewLine(); printf("}"); printNewLine();}
-    "}"$                { blocksCnt--; printNewLine(); printf("}"); printNewLine();}
+    {whiteSpaces}+"}"{whiteSpaces}*   { blocksCnt--; printNewLine(); printf("}"); printNewLine();}
+    "}"$                { blocksCnt--; printNewLine(); printf("}");printNewLine();}
     "}"                 { blocksCnt--;printf("}");}
     ^{whiteSpace}*      { printInit();}
     {token}             { printf("%s",yytext);}
